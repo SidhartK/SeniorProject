@@ -1,4 +1,4 @@
-from task import TaskType, Task, Worker
+from environment import TaskType, Task, Worker
 
 class MLTaskType(TaskType):
     DATA_PREPROCESSING = 1

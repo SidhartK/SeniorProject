@@ -1,4 +1,4 @@
-from task import TaskType, Task, WorkerType, Worker, run_simulation
+from environment import TaskType, Task, WorkerType, Worker, run_simulation
 import numpy as np
 
 class SMTTaskType(TaskType):
