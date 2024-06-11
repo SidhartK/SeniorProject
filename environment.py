@@ -1,8 +1,8 @@
 from enum import Enum
 from collections import deque
 from typing import Dict
-import numpy as np
 import heapq
+import numpy as np
 
 class TaskType(Enum):
     pass
@@ -49,14 +49,14 @@ class Worker:
         self.history = [] if save_history else None
 
     @property
-    def can_add_task(self):
+    def busy(self):
         for task in self.tasks:
             if task.completed:
                 self.tasks.popleft()
             else:
                 break
 
-        return not self.tasks
+        return self.tasks
 
     def add_task(self, task: Task):
         self.tasks.append(task)
@@ -79,6 +79,62 @@ class Worker:
     def __repr__(self):
         return f"<Worker(skill_map={self.skill_map}, tasks={list(self.tasks)})>"
 
+class Scheduler:
+    def __init__(self, workers: list[Worker]):
+        self.workers = workers
+
+    def assign_task(self, task: Task):
+        worker_idx = self.get_best_worker(task)
+        self.workers[worker_idx].add_task(task)
+
+    def get_best_worker(self, task: Task) -> Worker:
+        return min(range(len(self.workers)), key=lambda i: self.workers[i].compute_task_time(task) if (not self.workers[i].busy) else np.inf)
+
+    def __repr__(self):
+        return f"<Scheduler(workers={self.workers})>"
+    
+class Simulator:
+    def __init__(self, workers: list[Worker], scheduler: Scheduler):
+        self.workers = workers
+        self.scheduler = scheduler
+
+    def run_simulation(self, task_list: list[Task], verbose=False):
+        if verbose:
+            for i, worker in enumerate(self.workers):
+                print(i, ": ", worker)
+                for task in worker.tasks:
+                    print(f"\t{task}")
+
+        jobs = []
+        task_list = []
+        t = 0
+        while True:
+            if all([task.completed for worker in self.workers for task in worker.tasks]):
+                break
+
+            for i, worker in enumerate(self.workers):
+                if worker.tasks:
+                    task = worker.tasks[0]
+                    if task.dependencies_completed:
+                        heapq.heappush(jobs, (t + worker.compute_task_time(task), (len(task_list), i)))
+                        task_list.append(task)
+                        worker.tasks.popleft()
+            
+            if jobs:
+                t, (task_idx, worker_idx) = heapq.heappop(jobs)
+                task, worker = task_list[task_idx], self.workers[worker_idx]
+                task.completed = True
+                if verbose:
+                    print(f"Task {task.task_type} completed by Worker {worker}")
+                    print("Time t =", t)
+        
+        if verbose:
+            print("Simulation complete at time t =", t)
+
+        return t
+
+    def __repr__(self):
+        return f"<Simulator(workers={self.workers}, scheduler={self.scheduler})>"
 
 def run_simulation(workers: list[Worker], task_list: list[Task], scheduler, verbose=False):
     if verbose:
