@@ -1,250 +1,231 @@
-from enum import Enum
+import gym
+from gym import spaces
 from collections import deque
-from typing import Dict
-import heapq
-import numpy as np
+from enum import Enum
+import matplotlib.pyplot as plt
 
-class TaskType(Enum):
-    pass
+class TaskTypes(Enum):
+    SCHOOL = 0
+    WORK = 1
+    HOBBY = 2
+
+class WorkModes(Enum):
+    SCHOLAR = 0
+    WORKER = 1
+    HOBBYIST = 2
+
+SCORE_TABLE = [
+    [0.5, 0.0, 0.0],
+    [0.0, 0.5, 0.0],
+    [0.0, 0.0, 0.5],
+]
 
 class Task:
-    def __init__(self, task_type: TaskType, base_duration: float, dependencies: list = []):
-        self._completed = False
+    def __init__(self, task_type: TaskTypes, release_time, base_duration, reward=1.0):
         self.task_type = task_type
+        self.release_time = release_time
         self.base_duration = base_duration
-        self.dependencies = dependencies
+        self.time_left = None
+        self.reward = reward
 
-    @property
-    def completed(self):
-        return self._completed
+class TaskEnv(gym.Env):
+    """Custom Environment that follows gym interface"""
+    metadata = {'render.modes': ['human']}
     
-    @completed.setter
-    def completed(self, value):
-        if value:
-            if not self.dependencies_completed:
-                raise ValueError("Cannot complete task until all dependencies are completed")
-        self._completed = value
+    def __init__(self, mode_switch_frequency=1.0, num_tasks_per_action=1, schedule=None):
+        super(TaskEnv, self).__init__()
+        
+        self.mode_switch_frequency = mode_switch_frequency
+        self.t = 0.0
+        self.num_tasks_per_action = num_tasks_per_action
+
+        # Task queues
+        self.task_queues = [deque() for _ in list(WorkModes)]
+        self.num_work_modes = len(self.task_queues)
+        
+        # Worker state
+        self.work_mode = 0
+        
+        # Schedule
+        self.schedule = schedule if schedule else []
+        self.schedule_idx = 0
+        self._available_tasks = deque()
+        
+        # Define action and observation space
+        # Example when using discrete actions:
+        self.action_space = spaces.MultiDiscrete([self.num_work_modes] * self.num_tasks_per_action)
+        
+        # Example for using image as input:
+        # self.observation_space = spaces.Discrete(5)  # Example, need to define properly
 
     @property
-    def dependencies_completed(self):
-        return all([task.completed for task in self.dependencies])
-
-    def compute_task_time(self, skill: float) -> float:
-        if skill < 0:
-            raise ValueError("Skill level must be at least 0")
-        return self.base_duration * (2 ** (-skill))
-
-    def __repr__(self):
-        return f"<Task(type={self.task_type}, base_duration={self.base_duration}, completed={self.completed})>"
-
-class WorkerType(Enum):
-    pass
-
-class Worker:
-    DEFAULT_SKILL = 0.0
-
-    def __init__(self, skill_map: Dict[TaskType, float], save_history=False):
-        self.tasks = deque()
-        self.skill_map = skill_map
-        self.history = [] if save_history else None
-
-    @property
-    def busy(self):
-        for task in self.tasks:
-            if task.completed:
-                self.tasks.popleft()
+    def available_tasks(self):
+        while (self.schedule_idx < len(self.schedule)) and (len(self._available_tasks) < self.num_tasks_per_action):
+            if self.schedule[self.schedule_idx].release_time <= self.t:
+                self._available_tasks.append(self.schedule[self.schedule_idx])
+                self.schedule_idx += 1
             else:
                 break
+        return self._available_tasks
+        
+    def step(self, action):
+        reward = 0.0
 
-        return self.tasks
-
-    def add_task(self, task: Task):
-        self.tasks.append(task)
-
-    def complete_next_task(self):
-        if self.tasks:
-            task = self.tasks[0]
-            if task.dependencies_completed:
-                task.completed = True
-                if self.history is not None:
-                    self.history.append(task)
-                self.tasks.popleft()
-            return task
-        return None
-
-    def compute_task_time(self, task: Task) -> float:
-        skill = self.skill_map.get(task.task_type, self.DEFAULT_SKILL) 
-        return task.compute_task_time(skill)
-
-    def __repr__(self):
-        return f"<Worker(skill_map={self.skill_map}, tasks={list(self.tasks)})>"
-
-class Scheduler:
-    def __init__(self, workers: list[Worker]):
-        self.workers = workers
-
-    def assign_task(self, task: Task):
-        worker_idx = self.get_best_worker(task)
-        self.workers[worker_idx].add_task(task)
-
-    def get_best_worker(self, task: Task) -> Worker:
-        return min(range(len(self.workers)), key=lambda i: self.workers[i].compute_task_time(task) if (not self.workers[i].busy) else np.inf)
-
-    def __repr__(self):
-        return f"<Scheduler(workers={self.workers})>"
-    
-class Simulator:
-    def __init__(self, workers: list[Worker], scheduler: Scheduler):
-        self.workers = workers
-        self.scheduler = scheduler
-
-    def run_simulation(self, task_list: list[Task], verbose=False):
-        if verbose:
-            for i, worker in enumerate(self.workers):
-                print(i, ": ", worker)
-                for task in worker.tasks:
-                    print(f"\t{task}")
-
-        jobs = []
-        task_list = []
-        t = 0
-        while True:
-            if all([task.completed for worker in self.workers for task in worker.tasks]):
-                break
-
-            for i, worker in enumerate(self.workers):
-                if worker.tasks:
-                    task = worker.tasks[0]
-                    if task.dependencies_completed:
-                        heapq.heappush(jobs, (t + worker.compute_task_time(task), (len(task_list), i)))
-                        task_list.append(task)
-                        worker.tasks.popleft()
+        # Queue tasks based on action
+        for i in range(len(action)):
+            if self.available_tasks:
+                task = self.available_tasks.popleft()
+                task.time_left = task.base_duration * self._task_worker_score(task.task_type.value, action[i])
+                # print(f"\n[TASK STARTED]: Work Mode: {WorkModes(action[i]).name}, Task Type = {task.task_type}, Time Left: {task.time_left}, Score: {self._task_worker_score(task.task_type.value, action[i])}\n")
+                self.task_queues[action[i]].append(task)
+        
+        done = (self.schedule_idx >= len(self.schedule)) and len(self.available_tasks) == 0 and all([(len(q) == 0) for q in self.task_queues])
+        while len(self.available_tasks) == 0:
             
-            if jobs:
-                t, (task_idx, worker_idx) = heapq.heappop(jobs)
-                task, worker = task_list[task_idx], self.workers[worker_idx]
-                task.completed = True
-                if verbose:
-                    print(f"Task {task.task_type} completed by Worker {worker}")
-                    print("Time t =", t)
+            # Time budget for this step
+            self.end_time = self.t + 1.0
+
+            # Process tasks in the current worker mode
+            while self.task_queues[self.work_mode]:
+                task = self.task_queues[self.work_mode].popleft()
+                if self.t + task.time_left <= self.end_time:
+                    # print(f"\n[TASK DONE]: Work Mode = {WorkModes(self.work_mode).name}, Completion Time: {self.t + task.time_left}, Release Time: {task.release_time}\n")
+                    delay_factor = (self.t + task.time_left - task.release_time) / (self.mode_switch_frequency * self.num_work_modes)
+                    reward += task.reward * (0.99 ** delay_factor)
+                    self.t += task.time_left
+                else:
+                    task.time_left -= self.end_time - self.t
+                    self.task_queues[self.work_mode].appendleft(task)
+                    break
+            
+            # Increment current time
+            self.t = self.end_time
+
+            if self.t % self.mode_switch_frequency == 0.0:
+                self.work_mode += 1
+                self.work_mode = self.work_mode % self.num_work_modes
+
+            # Check if done
+            done = (self.schedule_idx >= len(self.schedule)) and len(self.available_tasks) == 0 and all([(len(q) == 0) for q in self.task_queues])
+            if done:
+                break
         
+        return self._state(), reward, done, {}
+    
+    def reset(self):
+        self.t = 0.0
+        self.task_queues = [deque() for _ in list(WorkModes)]
+        self.work_mode = 0
+        self.schedule_idx = 0
+        self._available_tasks = deque()
+        for task in self.schedule:
+            task.time_left = None
+        return self._state()
+    
+    def render(self, mode='human', close=False):
+        print(f"Work Mode: {WorkModes(self.work_mode).name}")
+        print(f"Task queues:")
+        for i, q in enumerate(self.task_queues):
+            print(f"\t- Worker {WorkModes(i).name}: Time = {sum([task.time_left for task in q])}, Next Reward = {q[0].reward if q else 0.0}")
+        
+        print(f"Available tasks:")
+        for task in self.available_tasks:
+            print(f"\t- Task({task.task_type}, {task.base_duration}, {task.reward})")
+        print(f"Schedule Index: {self.schedule_idx} / {len(self.schedule)}")
+        print(f"Time: {self.t}")
+    
+    def _state(self):
+        task_state = []
+        available_tasks_idx = 0
+        while len(task_state) < self.num_tasks_per_action:
+            if available_tasks_idx < len(self.available_tasks):
+                task = self.available_tasks[available_tasks_idx]
+                task_state.append(task)
+                available_tasks_idx += 1
+            else:
+                task_state.append(None)
+        return self.t, task_state, [sum([task.time_left for task in q]) for q in self.task_queues]
+    
+    def _task_worker_score(self, task_type: int, work_mode: int):
+        return 1 - SCORE_TABLE[task_type][work_mode]
+    
+def simulation(verbose=False):
+    schedule = [
+        Task(TaskTypes.SCHOOL, 0.0, 1, 100.0),
+        Task(TaskTypes.WORK, 0.0, 2, 200.0),
+        Task(TaskTypes.HOBBY, 0.0, 3, 50.0),
+    ]
+    env = TaskEnv(schedule=schedule)
+    observation = env.reset()
+    done = False
+    if verbose:
+        print("Starting simulation ...")
+        print("-" * 50)
+        env.render()
+        print(f"Observation: {observation}")
+        print("-" * 50)
+    total_reward = 0.0
+    action_history = []
+    while not done:
+        action = env.action_space.sample()
+        action_history.append(action[0])
+        # action = [1, 0, 2]
+        observation, reward, done, _ = env.step(action)
         if verbose:
-            print("Simulation complete at time t =", t)
+            print(f"Action: {action}")
+            env.render()
+            print(f"Observation: {observation}")
+            print(f"Reward: {reward}")
+            print(f"Done: {done}")
+            print("-" * 50)
+        total_reward += reward
 
-        return t
-
-    def __repr__(self):
-        return f"<Simulator(workers={self.workers}, scheduler={self.scheduler})>"
-
-def run_simulation(workers: list[Worker], task_list: list[Task], scheduler, verbose=False):
+    env.close()
     if verbose:
-        for i, worker in enumerate(workers):
-            print(i, ": ", worker)
-            for task in worker.tasks:
-                print(f"\t{task}")
+        print("Simulation done.")
+        print(f"Total Reward: {total_reward}")
+    return total_reward, {"actions": action_history, "final_observation": observation}
 
-    jobs = []
-    task_list = []
-    t = 0
-    while True:
-        if all([task.completed for worker in workers for task in worker.tasks]):
-            break
+if __name__ == "__main__":
+    num_simulations = 50000
+    rewards = []
+    simulation_lengths = []
+    best_info, worst_info = None, None
+    for i in range(num_simulations):
+        if (i + 1) % 1000 == 0:
+            print(f"Simulation {i + 1} / {num_simulations}")
+        r, info = simulation()
+        rewards.append(r)
+        simulation_lengths.append(info["final_observation"][0])
+        if r == max(rewards):
+            best_info = info
+        if r == min(rewards):
+            worst_info = info
+    print(best_info, max(rewards))
+    print(worst_info, min(rewards))
+    print(sum(rewards) / num_simulations)
+    print(sum(simulation_lengths) / num_simulations)
 
-        for i, worker in enumerate(workers):
-            if worker.tasks:
-                task = worker.tasks[0]
-                if task.dependencies_completed:
-                    heapq.heappush(jobs, (t + worker.compute_task_time(task), (len(task_list), i)))
-                    task_list.append(task)
-                    worker.tasks.popleft()
+    # Plot histogram
+    plt.clf()
+    plt.hist(rewards, bins=20)
+    plt.xlabel('Reward')
+    plt.ylabel('Frequency')
+    plt.title('Reward Distribution')
+    plt.savefig('reward_distribution.png')
+
+    # Plot histogram
+    plt.clf()
+    plt.hist(simulation_lengths, bins=20)
+    plt.xlabel('Simulation Length')
+    plt.ylabel('Frequency')
+    plt.title('Simulation Length Distribution')
+    plt.savefig('simulation_length_distribution.png')
+
+    # simulation(verbose=True)
+    
+
+
         
-        if jobs:
-            t, (task_idx, worker_idx) = heapq.heappop(jobs)
-            task, worker = task_list[task_idx], workers[worker_idx]
-            task.completed = True
-            if verbose:
-                print(f"Task {task.task_type} completed by Worker {worker}")
-                print("Time t =", t)
     
-    if verbose:
-        print("Simulation complete at time t =", t)
-
-    return t
-
-    
-
-# Example usage
-# if __name__ == "__main__":
-#     class SMTTaskType(TaskType):
-#         GRADING = 1
-#         RUNNING = 2
-#         PROCTORING = 3
-
-
-#     # Create a task to run the tests to each of the individual rooms each of equal distance. There are 3 tests to run so create 3 tasks.
-#     task1 = Task(SMTTaskType.RUNNING, 100)
-#     task2 = Task(SMTTaskType.RUNNING, 100)
-#     task3 = Task(SMTTaskType.RUNNING, 100)
-
-#     # Create a 3 proctoring tasks with the same amount of time needed to complete each task. But the proctoring tasks are dependent on the running tasks.
-#     proctor1 = Task(SMTTaskType.PROCTORING, 100, [task1])
-#     proctor2 = Task(SMTTaskType.PROCTORING, 100, [task2])
-#     proctor3 = Task(SMTTaskType.PROCTORING, 200, [task3])
-
-#     # Create 3 grading tasks with the same amount of time needed to complete each task. But the grading tasks are dependent on the proctoring tasks.
-#     grading1 = Task(SMTTaskType.GRADING, 100, [proctor1])
-#     grading2 = Task(SMTTaskType.GRADING, 100, [proctor2])
-#     grading3 = Task(SMTTaskType.GRADING, 150, [proctor3])
-
-    
-#     # Create 3 workers. One is extremely fast in running but slow at grading and proctoring. The second is extremely fast at grading but slow at running and proctoring. The third is extremely fast at proctoring but slow at running and grading.
-#     class SMTRunner(Worker):
-#         DEFAULT_SKILL_MAP = {SMTTaskType.RUNNING: 1, SMTTaskType.PROCTORING: 0, SMTTaskType.GRADING: 0}
-#         def __init__(self, skill_map: dict = DEFAULT_SKILL_MAP):
-#             super().__init__(skill_map)
-
-#     class SMTGrader(Worker):
-#         DEFAULT_SKILL_MAP = {SMTTaskType.RUNNING: 0, SMTTaskType.PROCTORING: 0, SMTTaskType.GRADING: 2}
-#         def __init__(self, skill_map: dict = DEFAULT_SKILL_MAP):
-#             super().__init__(skill_map)
-
-#     class SMTProctor(Worker):
-#         DEFAULT_SKILL_MAP = {SMTTaskType.RUNNING: 0, SMTTaskType.PROCTORING: 0.5, SMTTaskType.GRADING: 1}
-#         def __init__(self, skill_map: dict = DEFAULT_SKILL_MAP):
-#             super().__init__(skill_map)
-
-#     # Create a pool of workers: 2 runners, 2 graders, and 2 proctors 
-#     workers = [SMTRunner(), SMTRunner(), SMTGrader(), SMTGrader(), SMTProctor(), SMTProctor()]
-
-#     # Assign the tasks to the workers randomly
-#     all_tasks = [task1, task2, task3, proctor1, proctor2, proctor3, grading1, grading2, grading3]
-#     for task in all_tasks:
-#         np.random.choice(workers).add_task(task)
-
-#     for worker in workers:
-#         print(worker)
-
-#     t = 0
-#     tmax = 20
-
-#     while t < tmax:
-#         print("\n\nTime t = ", t)
-#         for i, worker in enumerate(workers):
-#             task = worker.complete_next_task()
-#             if task is not None:
-#                 if task.completed:
-#                     print(f"Task {task.task_type} completed by Worker {i}")
-#                 else:
-#                     print(f"Task {task.task_type} attempted by Worker {i}")
-#             else:
-#                 print(f"Worker {i} has no tasks to complete")
-#         if all([task.completed for task in all_tasks]):
-#             break
-#         t += 1
-
-#     print("Simulation complete at time t = ", t)
-    
-    
-
-
-
+   

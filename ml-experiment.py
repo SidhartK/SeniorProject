@@ -1,47 +1,49 @@
-from environment import TaskType, Task, Worker
+import gym
+from gym import spaces
+import numpy as np
+import random
+from collections import deque
 
-class MLTaskType(TaskType):
-    DATA_PREPROCESSING = 1
-    MODEL_TRAINING = 2
-    MODEL_EVALUATION = 3
+class Task:
+    def __init__(self, assignment_time, duration, reward):
+        self.assignment_time = assignment_time
+        self.duration = duration
+        self.time_left = duration
+        self.reward = reward
 
-class MLTask(Task):
-    def __init__(self, task_type: MLTaskType, base_duration: float):
-        super().__init__(task_type, base_duration)
-
-    def task_time(self, skill: float) -> float:
-        if skill < 0:
-            raise ValueError("Skill level must be at least 0")
+class SimpleEnv(gym.Env):
+    """Custom Environment that follows gym interface"""
+    metadata = {'render.modes': ['human']}
+    
+    def __init__(self, num_worker_modes=3, time_increment=1.0, schedule=None):
+        super(SimpleEnv, self).__init__()
         
-        return self.base_duration * (10 ** (-skill))
-
-    def __repr__(self):
-        return f"<MLTask(type={self.task_type}, base_duration={self.base_duration}, completed={self.completed})>"
+        self.num_worker_modes = num_worker_modes
+        self.time_increment = time_increment
+        self.schedule = schedule if schedule is not None else []
+        self.schedule_idx = 0
+        self.current_time = 0.0
+        
+        # Define action and observation space
+        self.action_space = spaces.MultiDiscrete([num_worker_modes] * len(self.schedule))
+        self.observation_space = spaces.Discrete(1)  # Dummy observation space
+        
+        # Initialize task queues and worker state
+        self.task_queues = [deque() for _ in range(num_worker_modes)]
+        self.worker_state = random.randint(0, num_worker_modes - 1)
     
-class MLWorker(Worker):
-    def __init__(self, skill_map: dict):
-        super().__init__(skill_map)
-
-    def calculate_task_time(self, task: MLTask) -> float:
-        skill = self.skill_map.get(task.task_type, self.DEFAULT_SKILL)
-        return task.task_time(skill)
-
-    def __repr__(self):
-        return f"<MLWorker(skill_map={self.skill_map}, tasks={list(self.tasks)})>"
-    
-
-def test1():
-    preprocessing = MLTask(MLTaskType.DATA_PREPROCESSING, 1e6)
-    training = MLTask(MLTaskType.MODEL_TRAINING, 1e8)
-    evaluation = MLTask(MLTaskType.MODEL_EVALUATION, 50)
-
-    #Create 3 workers. 
-    # One which is extremely good at matrix operations meaning it is best at model evaluation, and it is ok at model training but it is terrible at data preprocessing, 
-    # one which is hyper optimized for model training but is terrible at data preprocerssing and ok at model evlaution. 
-    # The final worker should be super good at data preprocessing (i.e. a scientific computer with a lot of numerical tricks built in for preprocessing) but is terrible at both model evluation and model training
-
-    lpu = MLWorker({MLTaskType.DATA_PREPROCESSING: 0, MLTaskType.MODEL_TRAINING: 2, MLTaskType.MODEL_EVALUATION: 4})
-    gpu = MLWorker({MLTaskType.DATA_PREPROCESSING: 0, MLTaskType.MODEL_TRAINING: 3, MLTaskType.MODEL_EVALUATION: 10})
-    cpu = MLWorker({MLTaskType.DATA_PREPROCESSING: 1, MLTaskType.MODEL_TRAINING: 0, MLTaskType.MODEL_EVALUATION: 0})
-
-
+    def step(self, action):
+        reward = 0.0
+        
+        # Queue tasks based on the action
+        for i in action:
+            if self.schedule_idx < len(self.schedule):
+                task = self.schedule[self.schedule_idx]
+                self.task_queues[i].append(task)
+                self.schedule_idx += 1
+        
+        # Update worker state randomly
+        self.worker_state = random.randint(0, self.num_worker_modes - 1)
+        
+        # Process tasks in the current worker state queue
+        time_budget
